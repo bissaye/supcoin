@@ -20,18 +20,29 @@ class Utilisateur:
         :param PATH: chemin vers les fichiers contenant les cles
         :param inscription: booleen permettant de determiner si l'utilisateur est inscrit ou pas
         """
-        self.chemin = PATH
-        self.fichier_public = "/public.pem"
-        self.fichier_privee = "/privee.pem"
 
+        #self.ev est un dictionnaire contenat tous les evenements pouvant etre utiliser dans les sockets
+        self.__ev = {
+            'new_user': "new_user",
+            'trans': "transaction",
+            'solde': "solde",
+            'hist': "historique",
+            'gen':'bloc de genese',
+        }
+        self.__chemin = PATH
+        self.__fichier_public = "/public.pem"
+        self.__fichier_privee = "/privee.pem"
+        self.__ip_reseau = "" #l'adresse du reseau
+        self.__port_user = 44444
+        self.__port_miner = 33333
+        self.key = ""
         if inscription == True:
 
             """
-                si l'utilisateur n'est pas encore inscri, on genere un paire de cle
-                puis on execute la methode inscription
+                si l'utilisateur n'est pas encore inscri on execute la methode inscription
             """
 
-            self.key = RSA.generate(1024)
+
             self.inscription()
         else:
 
@@ -41,62 +52,54 @@ class Utilisateur:
             """
 
             try:
-                with open(self.chemin+self.fichier_public , 'r') as pub:
+                with open(self.__chemin + self.__fichier_public , 'r') as pub:
                     publ = pub.read()
                     pub.close()
 
-                self.public= RSA.importKey(publ)
-                self.public_hash = sha256(self.public.exportKey()).hexdigest()
+                self.__public= RSA.importKey(publ)
+                self.__public_hash = sha256(self.__public.exportKey()).hexdigest()
             except:
-                self.public_hash = ""
-                self.public=""
+                self.__public_hash = ""
+                self.__public= ""
 
-        #self.ev est un dictionnaire contenat tous les evenements pouvant etre utiliser dans les sockets
-        self.ev = {
-            'trans': "transaction",
-            'solde': "solde",
-            'hist': "historique",
-            'new_user': "new_user"
-        }
 
-        # l'adresse du reseau
-        self.ip_reseau = ""
+
 
     def inscription(self):
+        # on genere d'abord la paure de cle
+        self.__key = RSA.generate(1024)
 
         #on recupere la cle publique dans la variable self.public et le hash dans self.public_hash
-        self.public = self.key.publickey()
-        self.public_hash = sha256(self.public.exportKey()).hexdigest()
+        self.__public = self.__key.publickey()
+        self.__public_hash = sha256(self.__public.exportKey()).hexdigest()
 
         #on enregistre les cles dans les fichiers qu'on va creer dans le chemin self.chemin
-        with open(self.chemin+self.fichier_public, 'w') as pub:
-            pub.write(self.public.exportKey('PEM').decode())
+        with open(self.__chemin + self.__fichier_public, 'w') as pub:
+            pub.write(self.__public.exportKey('PEM').decode())
             pub.close()
-        with open(self.chemin+self.fichier_privee, 'w') as priv:
-            priv.write(self.key.exportKey('PEM').decode())
+        with open(self.__chemin + self.__fichier_privee, 'w') as priv:
+            priv.write(self.__key.exportKey('PEM').decode())
             priv.close()
 
-        """
+        """ 
             on elabore maintenant un paquet de type "new_user" destine au mineur pour qu'il puisse
             l'enregistrer dans le bloc de genese, et l'envoi dans le reseau
         """
         packet = {
-            'ev': self.ev['new_user'],
-            'source': self.public_hash
+            'ev': self.__ev['new_user'],
+            'source': self.__public_hash
         }
 
-        try:
-            connexion = socket.socket(socket.AF_INET,  socket.SOCK_STREAM)
-            connexion.connect((self.ip_reseau, 12000))
-        except:
-            raise ConnexionError()
 
-        connexion.send(pickle.dumps(packet))
-        msg_recu = pickle.loads(connexion.recv(1024))
-        return msg_recu
+        if pickle.loads(self.requete(packet))['ACK']== True:
+            return True
+        else :
+            return self.inscription()
 
 
     def authentication(self):
+
+        self.bloc_de_genese()
         """
             il s'agira ici de verifier que l'utilisateur en question dispose de la cle privee correspondante
 
@@ -104,16 +107,17 @@ class Utilisateur:
             puis pour verifier, on va crypter une chaine de caractere random avec la cle publique et essayer de verifier si
             c'est le meme message qu'on obtient une fois qu'on le decrypte avec la cle privee
         """
-        with open(self.chemin+self.fichier_privee , 'r') as pk:
+        with open(self.__chemin + self.__fichier_privee , 'r') as pk:
             priv = pk.read()
             pk.close()
 
         private = RSA.importKey(priv)
 
         test = "".join(random.choice(string.ascii_letters) for i in range(20)).encode()
-        test_encrypt = self.public.encrypt(test)
+        test_encrypt = self.__public.encrypt(test)
         if test == private.decrypt(test_encrypt) :
-            if blockchain.verif_genese(self.public_hash) == True:
+            self.bloc_de_genese()
+            if blockchain.verif_genese(self.__public_hash) == True:
                 return True
             else:
                 return False
@@ -134,20 +138,13 @@ class Utilisateur:
         :param montant: montant de la transaction
         :return: un dictionnaire de la forme {AKC:'OK ou error',  motif: ' trans effectuee ou erreur montant, destinatire ...' }
         """
-        envoi = Transaction(self.public_hash, dest, montant)
+        envoi = Transaction(self.__public_hash, dest, montant)
         packet = {
-            'ev': self.ev['trans'],
+            'ev': self.__ev['trans'],
             'transaction': envoi
         }
-        try:
-            connexion = socket.socket(socket.AF_INET,  socket.SOCK_STREAM)
-            connexion.connect((self.ip_reseau, 12000))
-        except:
-            raise ConnexionError()
 
-        connexion.send(pickle.dumps(packet))
-        msg_recu = pickle.loads(connexion.recv(1024))
-        return msg_recu
+        return self.requete(pickle.dumps(packet))
 
     def solde(self):
         """
@@ -155,18 +152,10 @@ class Utilisateur:
         :return: solde
         """
         packet = {
-            'ev': self.ev['solde'],
-            'id': self.public_hash
+            'ev': self.__ev['solde'],
+            'id': self.__public_hash
         }
-        try:
-            connexion = socket.socket(socket.AF_INET,  socket.SOCK_STREAM)
-            connexion.connect((self.ip_reseau, 12000))
-        except:
-            raise ConnexionError()
-
-        connexion.send(pickle.dumps(packet))
-        msg_recu = pickle.loads(connexion.recv(1024))
-        return msg_recu
+        return self.requete(pickle.dumps(packet))
 
     def historique(self):
         """
@@ -174,18 +163,36 @@ class Utilisateur:
         :return: dictionnaire contenant l'historiqe
         """
         packet = {
-            'ev': self.ev['hist'],
-            'id': self.public_hash
+            'ev': self.__ev['hist'],
+            'id': self.__public_hash
         }
+
+        return self.requete(pickle.dumps(packet))
+
+    def bloc_de_genese(self):
+        """
+        grace acette methode , on peut mettre a jour le block de genese
+        """
+        packet = {
+            'ev': self.__ev['gen']
+        }
+        block_de_genese = self.requete(pickle.dumps(packet))
+        blockchain.update_genese(pickle.loads(block_de_genese))
+
+    def requete(self, data):
+        """
+        cette classe permettra le le transfert des messages dans le reseau
+        :param data:
+        :return:
+        """
         try:
-            connexion = socket.socket(socket.AF_INET,  socket.SOCK_STREAM)
-            connexion.connect((self.ip_reseau, 12000))
+            connexion = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            connexion.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         except:
             raise ConnexionError()
 
-        connexion.send(pickle.dumps(packet))
-        msg_recu = pickle.loads(connexion.recv(1024))
+        connexion.settimeout(10)
+        connexion.bind(("", self.__port_user))
+        connexion.sendto(data, ('<broadcast>', self.__port_miner))
+        msg_recu , addr = connexion.recvfrom(1024)
         return msg_recu
-
-
-
