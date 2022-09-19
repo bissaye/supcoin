@@ -1,0 +1,2 @@
+# supcoin
+Small crypto project
